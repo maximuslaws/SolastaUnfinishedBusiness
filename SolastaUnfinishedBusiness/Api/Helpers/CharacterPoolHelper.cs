@@ -687,32 +687,118 @@ namespace SolastaUnfinishedBusiness.Api.Helpers
                 summaries.Add(map);
             }
 
-            // Output per-character summaries
-            sb.AppendLine($"Comparing {summaries.Count} characters (capped at {maxCharacters})");
+            // Header
+            sb.AppendLine($"Comparing {summaries.Count} characters (capped at {maxCharacters}). Failed: {summaries.Count(s => s.ContainsKey("LoadError"))}");
             sb.AppendLine();
 
+            // Build compact comparison map for selected keys
+            var diffKeys = new[]
+            {
+                "Snapshot.Race", "Snapshot.SubRace", "Snapshot.Background",
+                "Snapshot.Classes", "Snapshot.Subclasses", "Snapshot.Levels",
+                "Snapshot.BuiltIn", "Snapshot.TemplateName", "SpellRepertoires",
+                "UsablePowers", "ActiveFeatures.Count",
+                "Visual.BodyAssetPrefix", "Visual.FaceShapeAssetPrefix", "Visual.HairShapeAssetPrefix", "Visual.BeardShapeAssetPrefix", "Visual.VoiceID", "Visual.BodyHeight"
+            };
+
+            sb.AppendLine("=== Compact Comparison (key -> distinctValuesCount -> examples) ===");
+            foreach (var key in diffKeys)
+            {
+                var vals = summaries.Select(s => s.ContainsKey(key) ? s[key] : "(missing)").ToArray();
+                var distinctVals = vals.Distinct().Where(v => v != null).Take(5).ToArray();
+                var distinctCount = vals.Distinct().Count();
+                sb.AppendLine($"{key} -> {distinctCount} distinct -> {string.Join(", ", distinctVals)}");
+            }
+
+            sb.AppendLine();
+
+            // Per-character compact blocks (aim for ~10 lines each)
+            sb.AppendLine("=== Per-character summary (compact) ===");
             foreach (var s in summaries)
             {
                 var fname = s.ContainsKey("FileName") ? s["FileName"] : "(unknown)";
-                sb.AppendLine($"--- {fname} ---");
-                if (s.ContainsKey("LoadError")) { sb.AppendLine($"LoadError: {s["LoadError"]}"); sb.AppendLine(); continue; }
-                foreach (var kv in s.OrderBy(kv => kv.Key))
+                sb.AppendLine($"-- {fname} --");
+                if (s.ContainsKey("LoadError"))
                 {
-                    if (kv.Key == "FileName") continue;
-                    sb.AppendLine($"{kv.Key}: {kv.Value}");
+                    sb.AppendLine($"LoadError: {s["LoadError"]}");
+                    sb.AppendLine();
+                    continue;
                 }
-                sb.AppendLine();
-            }
 
-            // Simple comparison matrix: for a selected set of keys, show distinct values per character and mark diffs
-            var compareKeys = new[] { "Snapshot.Name", "Snapshot.Race", "Snapshot.SubRace", "Snapshot.Classes", "Snapshot.Levels", "Hero.RaceDefinition", "Hero.ClassesAndLevels", "Hero.Attributes.Count", "UsablePowers", "SpellRepertoires", "ActiveFeatures.Count" };
-            sb.AppendLine("=== Comparison Matrix ===");
-            sb.AppendLine("Key | " + string.Join(" | ", summaries.Select(s => s.ContainsKey("FileName") ? s["FileName"] : "(unknown)")));
-            foreach (var key in compareKeys)
-            {
-                var vals = summaries.Select(s => s.ContainsKey(key) ? s[key] : "(missing)").ToArray();
-                var distinct = vals.Distinct().Count();
-                sb.AppendLine($"{key} | " + string.Join(" | ", vals) + (distinct > 1 ? "  <-- DIFF" : ""));
+                // line 1: name / surname
+                var name = s.ContainsKey("Snapshot.Name") ? s["Snapshot.Name"] : "(unknown)";
+                var sname = s.ContainsKey("Snapshot.SurName") ? s["Snapshot.SurName"] : "";
+                sb.AppendLine($"Name: {name} {sname}");
+
+                // line 2: built-in/template/imported/editor-only
+                var flags = new[] { "Snapshot.BuiltIn", "Snapshot.TemplateName", "Snapshot.Imported", "Snapshot.EditorOnly" }
+                    .Select(k => s.ContainsKey(k) ? s[k] : "(n/a)").ToArray();
+                sb.AppendLine($"Flags: BuiltIn={flags[0]} Template={flags[1]} Imported={flags[2]} EditorOnly={flags[3]}");
+
+                // line 3: race/subrace/background/sex
+                var race = s.ContainsKey("Snapshot.Race") ? s["Snapshot.Race"] : "";
+                var subrace = s.ContainsKey("Snapshot.SubRace") ? s["Snapshot.SubRace"] : "";
+                var bg = s.ContainsKey("Snapshot.Background") ? s["Snapshot.Background"] : "";
+                var sex = s.ContainsKey("Snapshot.Sex") ? s["Snapshot.Sex"] : "";
+                sb.AppendLine($"Race: {race}/{subrace} Background: {bg} Sex: {sex}");
+
+                // line 4: classes/levels/subclasses
+                var classes = s.ContainsKey("Snapshot.Classes") ? s["Snapshot.Classes"] : "(empty)";
+                var levels = s.ContainsKey("Snapshot.Levels") ? s["Snapshot.Levels"] : "(empty)";
+                var subs = s.ContainsKey("Snapshot.Subclasses") ? s["Snapshot.Subclasses"] : "(empty)";
+                sb.AppendLine($"Classes: {classes} Levels: {levels} Subclasses: {subs}");
+
+                // line 5: HP
+                var chp = s.ContainsKey("Snapshot.CurrentHitPoints") ? s["Snapshot.CurrentHitPoints"] : "(n/a)";
+                var mhp = s.ContainsKey("Snapshot.MaxHitPoints") ? s["Snapshot.MaxHitPoints"] : "(n/a)";
+                sb.AppendLine($"HP: {chp}/{mhp}");
+
+                // line 6: abilities compact
+                var abil = new[] { "STR", "DEX", "CON", "INT", "WIS", "CHA" };
+                var abilNames = new[] { "Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma" };
+                var abilLine = new List<string>();
+                foreach (var an in abilNames)
+                {
+                    var key = "Attr." + an;
+                    var v = s.ContainsKey(key) ? s[key] : "-";
+                    abilLine.Add($"{an.Substring(0,3)}:{v}");
+                }
+                sb.AppendLine("Abilities: " + string.Join(" ", abilLine));
+
+                // line 7: proficiencies counts + up to 3 samples
+                var profCats = new[] { "SkillProficiencies", "ToolTypeProficiencies", "WeaponTypeProficiencies", "ArmorCategoryProficiencies", "LanguageProficiencies" };
+                var profParts = new List<string>();
+                foreach (var pc in profCats)
+                {
+                    var key = "Prof." + pc;
+                    if (s.ContainsKey(key))
+                    {
+                        var val = s[key];
+                        // val may be comma-separated list
+                        var items = val == "(empty)" ? new string[0] : val.Split(new[] {','}, System.StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToArray();
+                        var cnt = items.Length;
+                        var sample = cnt == 0 ? "" : string.Join(",", items.Take(3));
+                        profParts.Add($"{pc}:{cnt}{(sample!=""?"("+sample+")":"")}");
+                    }
+                }
+                sb.AppendLine("Proficiencies: " + string.Join("; ", profParts));
+
+                // line 8: active features and counts
+                var afc = s.ContainsKey("ActiveFeatures.Count") ? s["ActiveFeatures.Count"] : (s.ContainsKey("ActiveFeatures.KeysSample") ? "?" : "0");
+                var afk = s.ContainsKey("ActiveFeatures.KeysSample") ? s["ActiveFeatures.KeysSample"] : "";
+                sb.AppendLine($"ActiveFeatures: count={afc} keys={afk}");
+
+                // line 9: spells/powers
+                var sr = s.ContainsKey("SpellRepertoires") ? s["SpellRepertoires"] : "(empty)";
+                var upv = s.ContainsKey("UsablePowers") ? s["UsablePowers"] : "(empty)";
+                sb.AppendLine($"SpellRepertoires: {sr} | UsablePowers: {upv}");
+
+                // line 10: visual summary
+                var vis = new[] { "Visual.BodyAssetPrefix", "Visual.FaceShapeAssetPrefix", "Visual.HairShapeAssetPrefix", "Visual.BeardShapeAssetPrefix", "Visual.VoiceID", "Visual.BodyHeight", "Snapshot.Photo", "Snapshot.PortraitTextureMode" };
+                var visParts = vis.Select(vv => (vv, val: s.ContainsKey(vv) ? s[vv] : "(n/a)")).Select(t => t.vv.Split('.').Last() + ":" + t.val);
+                sb.AppendLine("Visual: " + string.Join("; ", visParts));
+
+                sb.AppendLine();
             }
 
             // caps

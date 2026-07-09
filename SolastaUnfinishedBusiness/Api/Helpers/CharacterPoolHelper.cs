@@ -421,6 +421,311 @@ namespace SolastaUnfinishedBusiness.Api.Helpers
             return full;
         }
 
+        // Compare multiple character files read-only and produce a capped summary
+        internal static string CompareCharactersReadOnly(string[] fileNames, int maxCharacters = 10)
+        {
+            if (fileNames == null || fileNames.Length == 0)
+            {
+                return "No files provided.";
+            }
+
+            var sb = new StringBuilder();
+            var entries = new List<(string file, object hero, object snapshot, string loadError)>();
+
+            var capped = fileNames.Take(maxCharacters).ToArray();
+
+            foreach (var fn in capped)
+            {
+                try
+                {
+                    var (hero, snapshot, summary) = LoadCharacterSnapshotReadOnly(fn);
+                    // summary may contain errors; if hero/snapshot null and summary has message, treat as loadError
+                    var loadErr = (hero == null && snapshot == null) ? summary : null;
+                    entries.Add((fn, hero, snapshot, loadErr));
+                }
+                catch (Exception e)
+                {
+                    entries.Add((fn, null, null, e.Message));
+                }
+            }
+
+            // helper safe getters
+            object SafeGet(object obj, string name)
+            {
+                if (obj == null) return null;
+                try
+                {
+                    var t = obj.GetType();
+                    var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                    if (p != null) return p.GetValue(obj);
+                    var f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                    if (f != null) return f.GetValue(obj);
+                }
+                catch { }
+                return null;
+            }
+
+            string GetDefName(object def)
+            {
+                if (def == null) return "null";
+                try
+                {
+                    var n = SafeGet(def, "Name") ?? SafeGet(def, "name");
+                    if (n != null) return n.ToString();
+                    var gp = SafeGet(def, "GuiPresentation") ?? SafeGet(def, "guiPresentation");
+                    if (gp != null)
+                    {
+                        var title = SafeGet(gp, "Title") ?? SafeGet(gp, "title") ?? SafeGet(gp, "Description");
+                        if (title != null) return title.ToString();
+                    }
+                    var s = def.ToString();
+                    if (!string.IsNullOrEmpty(s) && s.Length < 200) return s;
+                    return def.GetType().FullName;
+                }
+                catch { return "unavailable"; }
+            }
+
+            string DescribeSimple(object obj)
+            {
+                if (obj == null) return "null";
+                if (obj is string s) return string.IsNullOrWhiteSpace(s) ? "(empty)" : s;
+                var t = obj.GetType();
+                if (t.IsPrimitive || obj is decimal || t.IsEnum) return obj.ToString();
+                if (obj is byte[] b) return $"byte[{b.Length}]";
+                if (obj is System.Collections.IEnumerable ie && !(obj is string))
+                {
+                    var c = 0; foreach (var _ in ie) { if (++c > 1000) break; };
+                    return $"Collection(count~={c})";
+                }
+                return GetDefName(obj);
+            }
+
+            // collect per-character compact summaries
+            var summaries = new List<Dictionary<string, string>>();
+
+            foreach (var e in entries)
+            {
+                var map = new Dictionary<string, string>();
+                map["FileName"] = e.file;
+                if (!string.IsNullOrEmpty(e.loadError))
+                {
+                    map["LoadError"] = e.loadError;
+                    summaries.Add(map);
+                    continue;
+                }
+
+                var snap = e.snapshot;
+                var hero = e.hero;
+
+                // Snapshot fields
+                string ss(string n) { return DescribeSimple(SafeGet(snap, n) ?? SafeGet(hero, n)); }
+
+                map["Snapshot.Name"] = ss("Name");
+                map["Snapshot.SurName"] = ss("SurName");
+                map["Snapshot.Race"] = ss("Race");
+                map["Snapshot.SubRace"] = ss("SubRace");
+                map["Snapshot.Background"] = ss("Background");
+                map["Snapshot.Sex"] = ss("Sex") == "null" ? ss("Gender") : ss("Sex");
+
+                // Collections: Classes, Levels, Subclasses
+                try
+                {
+                    var cls = SafeGet(snap, "Classes") ?? SafeGet(hero, "Classes");
+                    if (cls is System.Collections.IEnumerable ic && !(cls is string))
+                    {
+                        var list = new List<string>(); int c = 0;
+                        foreach (var it in ic)
+                        {
+                            list.Add(DescribeSimple(it)); if (++c >= 20) break;
+                        }
+                        map["Snapshot.Classes"] = list.Count == 0 ? "(empty)" : string.Join(",", list);
+                    }
+                    else map["Snapshot.Classes"] = DescribeSimple(cls);
+                }
+                catch { map["Snapshot.Classes"] = "unavailable"; }
+
+                try { map["Snapshot.Levels"] = DescribeSimple(SafeGet(snap, "Levels") ?? SafeGet(hero, "Levels")); } catch { map["Snapshot.Levels"] = "unavailable"; }
+                try { map["Snapshot.Subclasses"] = DescribeSimple(SafeGet(snap, "Subclasses") ?? SafeGet(hero, "Subclasses")); } catch { map["Snapshot.Subclasses"] = "unavailable"; }
+
+                map["Snapshot.CurrentHitPoints"] = ss("CurrentHitPoints");
+                map["Snapshot.MaxHitPoints"] = ss("MaxHitPoints");
+                map["Snapshot.BuiltIn"] = ss("BuiltIn");
+                map["Snapshot.EditorOnly"] = ss("EditorOnly");
+                map["Snapshot.TemplateName"] = ss("TemplateName");
+                map["Snapshot.Imported"] = ss("Imported");
+
+                // portrait
+                try
+                {
+                    var pt = SafeGet(snap, "PortraitTextureMode") ?? SafeGet(snap, "portraitTextureMode");
+                    map["Snapshot.PortraitTextureMode"] = DescribeSimple(pt);
+                    var photo = SafeGet(snap, "RulesetCharacterPhotoData") ?? SafeGet(snap, "RulesetCharacterPhotoData");
+                    if (photo is byte[] pb) map["Snapshot.Photo"] = $"byte[{pb.Length}]"; else map["Snapshot.Photo"] = DescribeSimple(photo);
+                }
+                catch { map["Snapshot.PortraitTextureMode"] = "unavailable"; map["Snapshot.Photo"] = "unavailable"; }
+
+                // Hero fields
+                try
+                {
+                    var rd = SafeGet(hero, "RaceDefinition");
+                    map["Hero.RaceDefinition"] = rd == null ? "null" : GetDefName(rd);
+                }
+                catch { map["Hero.RaceDefinition"] = "unavailable"; }
+
+                try { map["Hero.SubRaceDefinition"] = SafeGet(hero, "SubRaceDefinition") == null ? "null" : GetDefName(SafeGet(hero, "SubRaceDefinition")); } catch { map["Hero.SubRaceDefinition"] = "unavailable"; }
+                try { map["Hero.BackgroundDefinition"] = SafeGet(hero, "BackgroundDefinition") == null ? "null" : GetDefName(SafeGet(hero, "BackgroundDefinition")); } catch { map["Hero.BackgroundDefinition"] = "unavailable"; }
+
+                // ClassesAndLevels count/compact
+                try
+                {
+                    var cal = SafeGet(hero, "ClassesAndLevels");
+                    if (cal is System.Collections.IDictionary dcal) map["Hero.ClassesAndLevels"] = $"dict count={dcal.Count}";
+                    else if (cal is System.Collections.IEnumerable ical)
+                    {
+                        var list = new List<string>(); int i = 0;
+                        foreach (var it in ical) { list.Add(DescribeSimple(it)); if (++i >= 10) break; }
+                        map["Hero.ClassesAndLevels"] = list.Count == 0 ? "(empty)" : string.Join(",", list);
+                    }
+                    else map["Hero.ClassesAndLevels"] = DescribeSimple(cal);
+                }
+                catch { map["Hero.ClassesAndLevels"] = "unavailable"; }
+
+                // Attributes keys and six abilities
+                try
+                {
+                    var attrs = SafeGet(hero, "Attributes");
+                    if (attrs is System.Collections.IDictionary da)
+                    {
+                        map["Hero.Attributes.Count"] = da.Count.ToString();
+                        var keys = new List<string>(); int k = 0; foreach (var key in da.Keys) { keys.Add(key?.ToString()); if (++k >= 25) break; }
+                        map["Hero.Attributes.KeysSample"] = string.Join(",", keys);
+                        var abilityNames = new[] { "Strength", "Dexterity", "Constitution", "Intelligence", "Wisdom", "Charisma" };
+                        foreach (var an in abilityNames)
+                        {
+                            try
+                            {
+                                var val = da[an];
+                                if (val != null)
+                                {
+                                    var vt = val.GetType();
+                                    var baseV = vt.GetProperty("BaseValue")?.GetValue(val);
+                                    var cur = vt.GetProperty("CurrentValue")?.GetValue(val);
+                                    map[$"Attr.{an}"] = $"Base={baseV} Cur={cur}";
+                                }
+                                else map[$"Attr.{an}"] = "null";
+                            }
+                            catch { map[$"Attr.{an}"] = "unavailable"; }
+                        }
+                    }
+                    else map["Hero.Attributes.Count"] = DescribeSimple(attrs);
+                }
+                catch { map["Hero.Attributes.Count"] = "unavailable"; }
+
+                // Proficiencies counts/samples
+                var profNames = new[] { "SkillProficiencies", "ToolTypeProficiencies", "WeaponTypeProficiencies", "WeaponCategoryProficiencies", "ArmorTypeProficiencies", "ArmorCategoryProficiencies", "LanguageProficiencies" };
+                foreach (var pn in profNames)
+                {
+                    try
+                    {
+                        var val = SafeGet(hero, pn) ?? SafeGet(snap, pn);
+                        if (val is System.Collections.IEnumerable ive && !(val is string))
+                        {
+                            var items = new List<string>(); int c = 0; foreach (var it in ive) { items.Add(DescribeSimple(it)); if (++c >= 10) break; }
+                            map[$"Prof.{pn}"] = items.Count == 0 ? "(empty)" : string.Join(",", items);
+                        }
+                        else map[$"Prof.{pn}"] = DescribeSimple(val);
+                    }
+                    catch { map[$"Prof.{pn}"] = "unavailable"; }
+                }
+
+                // ActiveFeatures keys/counts
+                try
+                {
+                    var af = SafeGet(hero, "ActiveFeatures");
+                    if (af is System.Collections.IDictionary daf)
+                    {
+                        var keys = new List<string>(); int i = 0; foreach (var k in daf.Keys) { keys.Add(k?.ToString()); if (++i >= 20) break; }
+                        map["ActiveFeatures.KeysSample"] = keys.Count == 0 ? "(empty)" : string.Join(",", keys);
+                        map["ActiveFeatures.Count"] = daf.Count.ToString();
+                    }
+                    else map["ActiveFeatures"] = DescribeSimple(af);
+                }
+                catch { map["ActiveFeatures"] = "unavailable"; }
+
+                // UsablePowers and SpellRepertoires counts/samples
+                try
+                {
+                    var up = SafeGet(hero, "UsablePowers");
+                    if (up is System.Collections.IEnumerable iup)
+                    {
+                        var list = new List<string>(); int i = 0; foreach (var it in iup) { list.Add(DescribeSimple(it)); if (++i >= 10) break; }
+                        map["UsablePowers"] = list.Count == 0 ? "(empty)" : string.Join(",", list);
+                    }
+                    else map["UsablePowers"] = DescribeSimple(up);
+                }
+                catch { map["UsablePowers"] = "unavailable"; }
+
+                try
+                {
+                    var sr = SafeGet(hero, "SpellRepertoires");
+                    if (sr is System.Collections.IEnumerable isr)
+                    {
+                        var list = new List<string>(); int i = 0; foreach (var it in isr) { list.Add(DescribeSimple(it)); if (++i >= 10) break; }
+                        map["SpellRepertoires"] = list.Count == 0 ? "(empty)" : string.Join(",", list);
+                    }
+                    else map["SpellRepertoires"] = DescribeSimple(sr);
+                }
+                catch { map["SpellRepertoires"] = "unavailable"; }
+
+                // Visual candidates (sample fields)
+                var visualNames = new[] { "BodyHeight", "BodyAssetPrefix", "BodyDecorationAssetSuffix", "FaceShapeAssetPrefix", "HairShapeAssetPrefix", "BeardShapeAssetPrefix", "VoiceID", "voiceID", "bodyAssetPrefix", "faceShapeAssetPrefix", "hairShapeAssetPrefix", "beardShapeAssetPrefix" };
+                foreach (var vn in visualNames)
+                {
+                    try { map[$"Visual.{vn}"] = DescribeSimple(SafeGet(hero, vn) ?? SafeGet(snap, vn)); } catch { map[$"Visual.{vn}"] = "unavailable"; }
+                }
+
+                summaries.Add(map);
+            }
+
+            // Output per-character summaries
+            sb.AppendLine($"Comparing {summaries.Count} characters (capped at {maxCharacters})");
+            sb.AppendLine();
+
+            foreach (var s in summaries)
+            {
+                var fname = s.ContainsKey("FileName") ? s["FileName"] : "(unknown)";
+                sb.AppendLine($"--- {fname} ---");
+                if (s.ContainsKey("LoadError")) { sb.AppendLine($"LoadError: {s["LoadError"]}"); sb.AppendLine(); continue; }
+                foreach (var kv in s.OrderBy(kv => kv.Key))
+                {
+                    if (kv.Key == "FileName") continue;
+                    sb.AppendLine($"{kv.Key}: {kv.Value}");
+                }
+                sb.AppendLine();
+            }
+
+            // Simple comparison matrix: for a selected set of keys, show distinct values per character and mark diffs
+            var compareKeys = new[] { "Snapshot.Name", "Snapshot.Race", "Snapshot.SubRace", "Snapshot.Classes", "Snapshot.Levels", "Hero.RaceDefinition", "Hero.ClassesAndLevels", "Hero.Attributes.Count", "UsablePowers", "SpellRepertoires", "ActiveFeatures.Count" };
+            sb.AppendLine("=== Comparison Matrix ===");
+            sb.AppendLine("Key | " + string.Join(" | ", summaries.Select(s => s.ContainsKey("FileName") ? s["FileName"] : "(unknown)")));
+            foreach (var key in compareKeys)
+            {
+                var vals = summaries.Select(s => s.ContainsKey(key) ? s[key] : "(missing)").ToArray();
+                var distinct = vals.Distinct().Count();
+                sb.AppendLine($"{key} | " + string.Join(" | ", vals) + (distinct > 1 ? "  <-- DIFF" : ""));
+            }
+
+            // caps
+            var full = sb.ToString();
+            var outLines = full.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var truncated = false;
+            if (outLines.Length > 350) { full = string.Join(Environment.NewLine, outLines.Take(350)); truncated = true; }
+            if (full.Length > 40000) { full = full.Substring(0, 40000); truncated = true; }
+            if (truncated) full += Environment.NewLine + "[truncated for safety]";
+
+            return full;
+        }
+
         internal static string ResolvePoolKey(string selectedFileName)
         {
             if (string.IsNullOrEmpty(selectedFileName))

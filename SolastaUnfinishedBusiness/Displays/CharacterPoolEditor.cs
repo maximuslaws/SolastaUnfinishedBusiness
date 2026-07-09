@@ -35,6 +35,10 @@ namespace SolastaUnfinishedBusiness.Displays
         private object _loadedSnapshot;
         private Vector2 _loadedSnapshotScroll = new Vector2();
         private string _loadedCopyStatus = string.Empty;
+        private string _compareResult = string.Empty;
+        private bool _comparePresent;
+        private Vector2 _compareScroll = new Vector2();
+        private string _compareCopyStatus = string.Empty;
 
         private void Refresh()
         {
@@ -256,6 +260,25 @@ namespace SolastaUnfinishedBusiness.Displays
                 }, UI.Width(280f)))
                 {
                 }
+
+                GUILayout.Space(10f);
+                if (UI.ActionButton("Compare Loaded Character Structures Read-Only", () =>
+                {
+                    try
+                    {
+                        var files = _scan.files ?? System.Array.Empty<CharacterFileEntry>();
+                        var names = files.Select(f => f.FileName).ToArray();
+                        _compareResult = CharacterPoolHelper.CompareCharactersReadOnly(names, 10);
+                        _comparePresent = true;
+                    }
+                    catch (System.Exception e)
+                    {
+                        _compareResult = "Error: " + e.Message;
+                        _comparePresent = true;
+                    }
+                }, UI.Width(320f)))
+                {
+                }
             }
 
             if (!string.IsNullOrEmpty(_loadedSnapshotResult))
@@ -269,6 +292,25 @@ namespace SolastaUnfinishedBusiness.Displays
                 UI.Label($"Loaded hero present: {(_loadedHero == null ? "no" : "yes")}");
                 UI.Label($"Loaded snapshot present: {(_loadedSnapshot == null ? "no" : "yes")}");
                 if (!string.IsNullOrEmpty(_loadedCopyStatus)) UI.Label(_loadedCopyStatus);
+            }
+
+            if (_comparePresent && !string.IsNullOrEmpty(_compareResult))
+            {
+                using (var scope = UI.ScrollViewScope(_compareScroll, UI.Height(400f)))
+                {
+                    _compareScroll = scope.scrollPosition;
+                    GUILayout.Label(_compareResult);
+                }
+                using (UI.HorizontalScope())
+                {
+                    if (UI.ActionButton("Copy Comparison To Clipboard", () =>
+                    {
+                        GUIUtility.systemCopyBuffer = _compareResult;
+                        _compareCopyStatus = "Comparison copied to clipboard.";
+                    }, UI.Width(260f))) { }
+                    GUILayout.Space(10f);
+                    if (!string.IsNullOrEmpty(_compareCopyStatus)) UI.Label(_compareCopyStatus);
+                }
             }
 
             UI.Label();
